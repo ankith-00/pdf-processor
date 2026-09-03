@@ -66,6 +66,7 @@ def process_pdf(pdf_bytes: bytes, job: Job, mongo: MongoStorage) -> None:
         # Open the PDF from bytes
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         job.total_pages = len(doc)
+        mongo.update_job(job)
 
         logger.info(f"Job {job.job_id}: Processing {job.total_pages} pages")
 
@@ -118,6 +119,7 @@ def process_pdf(pdf_bytes: bytes, job: Job, mongo: MongoStorage) -> None:
                     student=student_dict,
                 )
                 job.processed_pages = end_page + 1
+                mongo.update_job(job)
 
             except Exception as e:
                 logger.error(
@@ -131,8 +133,10 @@ def process_pdf(pdf_bytes: bytes, job: Job, mongo: MongoStorage) -> None:
         # Step 6: Finalize the modified PDF
         job.result_pdf = finalize_pdf(doc)
         doc.close()
+        mongo.save_result(job.job_id, job.result_pdf)
 
         job.status = JobStatus.DONE
+        mongo.update_job(job)
         logger.info(
             f"Job {job.job_id}: Complete. "
             f"{job.barcode_success} barcodes placed, "
@@ -142,6 +146,7 @@ def process_pdf(pdf_bytes: bytes, job: Job, mongo: MongoStorage) -> None:
     except Exception as e:
         job.status = JobStatus.ERROR
         job.error_message = str(e)
+        mongo.update_job(job)
         logger.error(
             f"Job {job.job_id}: Pipeline failed: {e}",
             exc_info=True,

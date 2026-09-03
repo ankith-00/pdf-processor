@@ -57,6 +57,7 @@ async def _eviction_loop():
 async def lifespan(app: FastAPI):
     """Start the eviction loop on startup."""
     app.state.mongo = MongoStorage()
+    app.state.mongo.mark_processing_jobs_interrupted()
     task = asyncio.create_task(_eviction_loop())
     try:
         yield
@@ -83,6 +84,29 @@ app.add_middleware(
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
+def _get_job(job_id: str) -> Job | None:
+    job = _jobs.get(job_id)
+    if job is not None:
+        return job
+
+    saved = app.state.mongo.get_job(job_id)
+    if saved is None:
+        return None
+
+    job = Job(
+        job_id=saved["job_id"],
+        status=JobStatus(saved["status"]),
+        total_pages=saved.get("total_pages", 0),
+        processed_pages=saved.get("processed_pages", 0),
+        error_message=saved.get("error_message", ""),
+        filename=saved.get("filename", ""),
+        barcode_success=saved.get("barcode_success", 0),
+        barcode_failed=saved.get("barcode_failed", 0),
+    )
+    job.students = app.state.mongo.get_students(job_id)
+    _jobs[job_id] = job
+    return job
+
 @app.post("/process")
 async def process_upload(file: UploadFile = File(...)):
     """
@@ -101,6 +125,7 @@ async def process_upload(file: UploadFile = File(...)):
     job_id = str(uuid.uuid4())
     job = Job(job_id=job_id, filename=file.filename or "upload.pdf")
     _jobs[job_id] = job
+    app.state.mongo.create_job(job.job_id, job.filename)
 
     logger.info(f"Received PDF upload: {file.filename} ({len(pdf_bytes)} bytes) → job {job_id}")
 
@@ -119,7 +144,7 @@ async def get_status(job_id: str):
     Returns progress info and any student data extracted so far.
     The frontend polls this every ~2 seconds to update the UI progressively.
     """
-    job = _jobs.get(job_id)
+    job = _get_job(job_id)
     if job is None:
         raise HTTPException(404, "Job not found.")
 
@@ -144,7 +169,7 @@ async def get_result(job_id: str):
     Only available after the job reaches "done" status.
     After download, the result bytes are evicted from memory.
     """
-    job = _jobs.get(job_id)
+    job = _get_job(job_id)
     if job is None:
         raise HTTPException(404, "Job not found.")
 
@@ -153,6 +178,9 @@ async def get_result(job_id: str):
 
     if job.status == JobStatus.ERROR:
         raise HTTPException(500, f"Job failed: {job.error_message}")
+
+    if job.result_pdf is None:
+        job.result_pdf = app.state.mongo.get_result(job_id)
 
     if job.result_pdf is None:
         raise HTTPException(500, "No result PDF available.")
@@ -166,6 +194,7 @@ async def get_result(job_id: str):
 
     # Evict the result from memory after serving (it's been downloaded)
     job.result_pdf = None
+    app.state.mongo.delete_result(job_id)
 
     return Response(
         content=pdf_bytes,
@@ -182,6 +211,20 @@ async def health():
     return {"status": "ok", "active_jobs": len(_jobs)}
 
 
+@app.get("/lookup/{barcode}")
+async def lookup_barcode(barcode: str):
+    """Find the extracted student record associated with a barcode value."""
+    normalized_barcode = barcode.strip()
+    if not normalized_barcode:
+        raise HTTPException(400, "Barcode value is required.")
+
+    document = app.state.mongo.find_student_by_barcode(normalized_barcode)
+    if document is None:
+        raise HTTPException(404, "No student record found for this barcode.")
+
+    return JSONResponse(document)
+
+
 @app.get("/extracted-data/{job_id}")
 async def get_extracted_data(job_id: str):
     """
@@ -192,7 +235,7 @@ async def get_extracted_data(job_id: str):
     is one student record plus `barcode_placed`. Data lives in memory only and
     is evicted with the job 30 minutes after completion.
     """
-    job = _jobs.get(job_id)
+    job = _get_job(job_id)
     if job is None:
         raise HTTPException(404, "Job not found (it may have expired — jobs are kept 30 minutes).")
 
