@@ -65,6 +65,7 @@ def process_pdf(pdf_bytes: bytes, job: Job, mongo: MongoStorage) -> None:
     try:
         # Open the PDF from bytes
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        del pdf_bytes
         job.total_pages = len(doc)
         mongo.update_job(job)
 
@@ -131,9 +132,10 @@ def process_pdf(pdf_bytes: bytes, job: Job, mongo: MongoStorage) -> None:
                 job.processed_pages = page_range[1] + 1
 
         # Step 6: Finalize the modified PDF
-        job.result_pdf = finalize_pdf(doc)
+        result_pdf = finalize_pdf(doc)
         doc.close()
-        mongo.save_result(job.job_id, job.result_pdf)
+        mongo.save_result(job.job_id, result_pdf)
+        del result_pdf
 
         job.status = JobStatus.DONE
         mongo.update_job(job)

@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _jobs: dict[str, Job] = {}
 _JOB_TTL_SECONDS = 30 * 60  # 30 minutes
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 async def _eviction_loop():
@@ -118,7 +119,13 @@ async def process_upload(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are accepted.")
 
-    pdf_bytes = await file.read()
+    if any(job.status == JobStatus.PROCESSING for job in _jobs.values()):
+        raise HTTPException(429, "Another PDF is currently being processed.")
+
+    pdf_bytes = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(pdf_bytes) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "PDF must be 25 MB or smaller.")
+
     if len(pdf_bytes) == 0:
         raise HTTPException(400, "Empty file.")
 
