@@ -1,0 +1,23 @@
+[project]
+name = "ocr-worker"
+version = "0.1.0"
+description = "Hall ticket barcode worker — FastAPI service that stamps Code128 barcodes into UUCMS hall ticket PDFs"
+readme = "README.md"
+authors = [
+    { name = "Ankith Kumar", email = "ankith.kumar@tenon10.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.6",
+    "pillow==11.1.0",
+    "pymongo==4.10.1",
+    "pymupdf==1.25.3",
+    "python-barcode==0.15.1",
+    "python-multipart==0.0.20",
+    "uvicorn[standard]==0.34.0",
+]
+
+# Deployable app, not an installable library — the worker modules live flat at
+# server/ (main.py, pipeline.py, …) and run via `uv run uvicorn main:app`.
+[tool.uv]
+package = false
